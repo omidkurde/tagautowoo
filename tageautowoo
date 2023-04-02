@@ -1,0 +1,1796 @@
+<?php
+
+/*
+
+Plugin Name: Product Tags Optimizer
+
+Description: Optimizes product tags using AI algorithm.
+
+*/
+
+
+
+// Define plugin version and path
+
+define( 'PTO_VERSION', '1.0.0' );
+
+define( 'PTO_PLUGIN_PATH', plugin_dir_path( __FILE__ ) );
+
+
+
+// Add hook for plugin activation
+
+register_activation_hook( __FILE__, 'pto_activate' );
+
+function pto_activate() {
+
+    // Register custom database table for plugin
+
+    global $wpdb;
+
+    $table_name = $wpdb->prefix . 'pto_product_tags';
+
+    $charset_collate = $wpdb->get_charset_collate();
+
+    $sql = "CREATE TABLE IF NOT EXISTS $table_name (
+
+            id INT NOT NULL AUTO_INCREMENT,
+
+            product_id INT NOT NULL,
+
+            tags TEXT NOT NULL,
+
+            PRIMARY KEY (id)
+
+        ) $charset_collate;";
+
+    require_once( ABSPATH . 'wp-admin/includes/upgrade.php' );
+
+    dbDelta( $sql );
+
+}
+
+
+
+// Add hook for plugin deactivation
+
+register_deactivation_hook( __FILE__, 'pto_deactivate' );
+
+function pto_deactivate() {
+
+    // Remove custom database table for plugin
+
+    global $wpdb;
+
+    $table_name = $wpdb->prefix . 'pto_product_tags';
+
+    $sql = "DROP TABLE IF EXISTS $table_name;";
+
+    $wpdb->query( $sql );
+
+}
+
+
+
+// Add hook for plugin uninstallation
+
+register_uninstall_hook( __FILE__, 'pto_uninstall' );
+
+function pto_uninstall() {
+
+    // Remove custom database table for plugin
+
+    global $wpdb;
+
+    $table_name = $wpdb->prefix . 'pto_product_tags';
+
+    $sql = "DROP TABLE IF EXISTS $table_name;";
+
+    $wpdb->query( $sql );
+
+}
+
+
+
+// Add hook for plugin initialization
+
+add_action( 'init', 'pto_init' );
+
+function pto_init() {
+
+    // Load plugin text domain for translations
+
+    load_plugin_textdomain( 'product-tags-optimizer', false, dirname( plugin_basename( __FILE__ ) ) . '/languages/' );
+
+}
+
+
+
+// Add hook for admin menu
+
+add_action( 'admin_menu', 'pto_admin_menu' );
+
+function pto_admin_menu() {
+
+    // Add plugin settings page to admin menu
+
+    add_options_page(
+
+        __( 'Product Tags Optimizer', 'product-tags-optimizer' ),
+
+        __( 'Product Tags Optimizer', 'product-tags-optimizer' ),
+
+        'manage_options',
+
+        'pto-settings',
+
+        'pto_settings_page'
+
+    );
+
+}
+
+
+
+// Define plugin settings page
+
+function pto_settings_page() {
+
+    // Check if user has sufficient permissions
+
+    if ( ! current_user_can( 'manage_options' ) ) {
+
+        wp_die( __( 'You do not have sufficient permissions to access this page.', 'product-tags-optimizer' ) );
+
+    }
+
+    
+
+    // Check if form has been submitted
+
+    if
+
+
+
+
+
+
+
+ 
+
+ 
+
+
+
+( isset( $_POST['submit'] ) ) {
+
+// Retrieve settings from form submission
+
+$pt_min_confidence = sanitize_text_field( $_POST['pt_min_confidence'] );
+
+$pt_num_suggestions = sanitize_text_field( $_POST['pt_num_suggestions'] );
+
+
+
+ 
+
+    // Update settings in database
+
+    update_option( 'pt_min_confidence', $pt_min_confidence );
+
+    update_option( 'pt_num_suggestions', $pt_num_suggestions );
+
+
+
+    // Display success message
+
+    echo '<div class="notice notice-success"><p>' . __( 'Settings updated.', 'product-tags-optimizer' ) . '</p></div>';
+
+}
+
+
+
+// Retrieve current settings from database
+
+$pt_min_confidence = get_option( 'pt_min_confidence', 0.8 );
+
+$pt_num_suggestions = get_option( 'pt_num_suggestions', 5 );
+
+?>
+
+
+
+<div class="wrap">
+
+    <h1><?php echo esc_html( get_admin_page_title() ); ?></h1>
+
+    <form method="post" action="">
+
+        <table class="form-table">
+
+            <tbody>
+
+                <tr>
+
+                    <th scope="row"><label for="pt_min_confidence"><?php _e( 'Minimum Confidence', 'product-tags-optimizer' ); ?></label></th>
+
+                    <td>
+
+                        <input type="number" name="pt_min_confidence" id="pt_min_confidence" min="0" max="1" step="0.1" value="<?php echo esc_attr( $pt_min_confidence ); ?>" class="regular-text">
+
+                        <p class="description"><?php _e( 'Minimum confidence score for suggested tags. Set to 0 to disable suggestions.', 'product-tags-optimizer' ); ?></p>
+
+                    </td>
+
+                </tr>
+
+                <tr>
+
+                    <th scope="row"><label for="pt_num_suggestions"><?php _e( 'Number of Suggestions', 'product-tags-optimizer' ); ?></label></th>
+
+                    <td>
+
+                        <input type="number" name="pt_num_suggestions" id="pt_num_suggestions" min="1" max="10" value="<?php echo esc_attr( $pt_num_suggestions ); ?>" class="regular-text">
+
+                        <p class="description"><?php _e( 'Number of suggested tags to display.', 'product-tags-optimizer' ); ?></p>
+
+                    </td>
+
+                </tr>
+
+            </tbody>
+
+        </table>
+
+        <?php submit_button(); ?>
+
+    </form>
+
+</div>
+
+<?php
+
+}
+
+
+
+// Add hook for product save
+
+add_action( 'woocommerce_process_product_meta', 'pto_save_product_tags' );
+
+function pto_save_product_tags( $post_id ) {
+
+// Check if product is a variable product
+
+$product = wc_get_product( $post_id );
+
+if ( $product->is_type( 'variable' ) ) {
+
+return;
+
+}
+
+
+
+ 
+
+// Retrieve product title and description
+
+$product_title = get_the_title( $post_id );
+
+$product_description = get_post_field( 'post_content', $post_id );
+
+
+
+// Retrieve suggested tags using AI algorithm
+
+$tags = pto_suggest_product_tags( $product_title, $product_description );
+
+
+
+// Store tags in custom database table
+
+global $wpdb;
+
+$table_name = $wpdb->prefix . 'pto_product_tags';
+
+$wpdb->replace( $table_name, array(
+
+    'product_id' => $post_id,
+
+    'tags' => json_encode( $tags )
+
+), array(
+
+    '%d',
+
+    '%s'
+
+) );
+
+}
+
+
+
+// Define function to suggest product tags using AI algorithm
+
+function
+
+
+
+
+
+
+
+
+
+ 
+
+ 
+
+
+
+pto_suggest_product_tags( $title, $description ) {
+
+// Retrieve settings from database
+
+$pt_min_confidence = get_option( 'pt_min_confidence', 0.8 );
+
+$pt_num_suggestions = get_option( 'pt_num_suggestions', 5 );
+
+
+
+ 
+
+// Initialize AI model
+
+$model = new \OpenAI\API( OPENAI_API_KEY );
+
+$model->setModel( 'text-davinci-002' );
+
+
+
+// Prepare prompt for AI model
+
+$prompt = "Suggest tags for a product based on the title and description.\n\nTitle: $title\nDescription: $description\n\nSuggested tags:";
+
+
+
+// Generate suggestions using AI model
+
+$completions = $model->complete(
+
+    $prompt,
+
+    array(
+
+        'temperature' => 0.5,
+
+        'max_tokens' => 20,
+
+        'n' => $pt_num_suggestions,
+
+        'stop' => 'Suggested tags:'
+
+    )
+
+);
+
+
+
+// Extract suggested tags from AI model output
+
+$tags = array();
+
+foreach ( $completions->choices as $choice ) {
+
+    $text = $choice->text;
+
+    $confidence = $choice->confidence;
+
+    $tag = trim( str_replace( '*', '', $text ) );
+
+    if ( $confidence >= $pt_min_confidence && ! in_array( $tag, $tags ) ) {
+
+        $tags[] = $tag;
+
+    }
+
+}
+
+
+
+return $tags;
+
+}
+
+
+
+// Add hook for displaying suggested tags on product page
+
+add_action( 'woocommerce_single_product_summary', 'pto_display_product_tags', 35 );
+
+function pto_display_product_tags() {
+
+global $product;
+
+
+
+ 
+
+// Retrieve product tags from custom database table
+
+global $wpdb;
+
+$table_name = $wpdb->prefix . 'pto_product_tags';
+
+$tags = $wpdb->get_var( "SELECT tags FROM $table_name WHERE product_id = $product->id" );
+
+if ( ! empty( $tags ) ) {
+
+    $tags = json_decode( $tags );
+
+    echo '<div class="product-tags">';
+
+    echo '<h4>' . __( 'Tags:', 'product-tags-optimizer' ) . '</h4>';
+
+    echo '<ul>';
+
+    foreach ( $tags as $tag ) {
+
+        echo '<li>' . esc_html( $tag ) . '</li>';
+
+    }
+
+    echo '</ul>';
+
+    echo '</div>';
+
+}
+
+}
+
+
+
+// Add hook for displaying suggested tags on product archive page
+
+add_action( 'woocommerce_after_shop_loop_item_title', 'pto_display_product_tags_archive', 5 );
+
+function pto_display_product_tags_archive() {
+
+global $product;
+
+
+
+ 
+
+// Retrieve product tags from custom database table
+
+global $wpdb;
+
+$table_name = $wpdb->prefix . 'pto_product_tags';
+
+$tags = $wpdb->get_var( "SELECT tags FROM $table_name WHERE product_id = $product->id" );
+
+if ( ! empty( $tags ) ) {
+
+    $tags = json_decode( $tags );
+
+    echo '<div class="product-tags">';
+
+    echo '<ul>';
+
+    foreach ( $tags as $tag ) {
+
+        echo '<li>' . esc_html( $tag ) . '</li>';
+
+    }
+
+    echo '</ul>';
+
+    echo '</div>';
+
+}
+
+}
+
+
+
+
+
+
+
+
+
+ 
+
+ 
+
+
+
+// Add hook for generating product tags when a product is saved
+
+add_action( 'woocommerce_process_product_meta', 'pto_generate_product_tags', 10, 1 );
+
+function pto_generate_product_tags( $product_id ) {
+
+// Retrieve product data
+
+$title = get_the_title( $product_id );
+
+$description = get_the_content( $product_id );
+
+
+
+ 
+
+// Generate tags using AI model
+
+$tags = pto_suggest_product_tags( $title, $description );
+
+
+
+// Store tags in custom database table
+
+global $wpdb;
+
+$table_name = $wpdb->prefix . 'pto_product_tags';
+
+$wpdb->replace(
+
+    $table_name,
+
+    array(
+
+        'product_id' => $product_id,
+
+        'tags' => json_encode( $tags ),
+
+        'last_updated' => current_time( 'mysql' )
+
+    ),
+
+    array(
+
+        '%d',
+
+        '%s',
+
+        '%s'
+
+    )
+
+);
+
+}
+
+
+
+// Add settings page for plugin options
+
+add_action( 'admin_menu', 'pto_add_options_page' );
+
+function pto_add_options_page() {
+
+add_options_page(
+
+__( 'Product Tags Optimizer', 'product-tags-optimizer' ),
+
+__( 'Product Tags Optimizer', 'product-tags-optimizer' ),
+
+'manage_options',
+
+'product-tags-optimizer',
+
+'pto_options_page'
+
+);
+
+}
+
+
+
+// Render settings page content
+
+function pto_options_page() {
+
+// Update settings if form is submitted
+
+if ( isset( $_POST['pt_submit'] ) ) {
+
+update_option( 'pt_min_confidence', floatval( $_POST['pt_min_confidence'] ) );
+
+update_option( 'pt_num_suggestions', intval( $_POST['pt_num_suggestions'] ) );
+
+echo '<div class="notice notice-success"><p>' . __( 'Settings updated.', 'product-tags-optimizer' ) . '</p></div>';
+
+}
+
+
+
+ 
+
+// Retrieve current settings from database
+
+$pt_min_confidence = get_option( 'pt_min_confidence', 0.8 );
+
+$pt_num_suggestions = get_option( 'pt_num_suggestions', 5 );
+
+?>
+
+<div class="wrap">
+
+    <h1><?php echo esc_html( __( 'Product Tags Optimizer Settings', 'product-tags-optimizer' ) ); ?></h1>
+
+    <form method="post">
+
+        <table class="form-table">
+
+            <tr valign="top">
+
+                <th scope="row"><?php echo esc_html( __( 'Minimum Confidence', 'product-tags-optimizer' ) ); ?></th>
+
+                <td><input type="number" name="pt_min_confidence" min="0" max="1" step="0.01" value="<?php echo esc_attr( $pt_min_confidence ); ?>" /></td>
+
+            </tr>
+
+            <tr valign="top">
+
+                <th scope="row"><?php echo esc_html( __( 'Number of Suggestions', 'product-tags-optimizer' ) ); ?></th>
+
+                <td><input type="number" name="pt_num_suggestions" min="1" max="10" value="<?php echo esc_attr( $pt_num_suggestions ); ?>" /></td>
+
+            </tr>
+
+        </table>
+
+        <input type="submit" name="pt_submit" class="button-primary" value="<?php echo esc_attr( __( 'Save Changes', 'product-tags-optimizer' ) ); ?>" />
+
+    </form>
+
+</div>
+
+<?php
+
+}
+
+
+
+
+
+
+
+
+
+ 
+
+ 
+
+
+
+// Add shortcode for displaying product tags on frontend
+
+add_shortcode( 'product_tags', 'pto_display_product_tags' );
+
+function pto_display_product_tags( $atts ) {
+
+// Retrieve product ID from shortcode attributes
+
+$product_id = isset( $atts['id'] ) ? intval( $atts['id'] ) : get_the_ID();
+
+
+
+ 
+
+// Retrieve tags from custom database table
+
+global $wpdb;
+
+$table_name = $wpdb->prefix . 'pto_product_tags';
+
+$tags = $wpdb->get_var( $wpdb->prepare( "SELECT tags FROM $table_name WHERE product_id = %d", $product_id ) );
+
+
+
+// Decode JSON string into array
+
+$tags = json_decode( $tags );
+
+
+
+// If no tags are found, return an empty string
+
+if ( empty( $tags ) ) {
+
+    return '';
+
+}
+
+
+
+// Generate HTML for displaying tags
+
+$html = '<ul class="pto-product-tags">';
+
+foreach ( $tags as $tag ) {
+
+    $html .= '<li>' . esc_html( $tag ) . '</li>';
+
+}
+
+$html .= '</ul>';
+
+
+
+return $html;
+
+}
+
+
+
+// Add filter for modifying product tags in search results
+
+add_filter( 'woocommerce_product_search_result', 'pto_modify_search_result_tags', 10, 2 );
+
+function pto_modify_search_result_tags( $product, $term ) {
+
+// Retrieve product ID
+
+$product_id = $product->get_id();
+
+
+
+ 
+
+// Retrieve tags from custom database table
+
+global $wpdb;
+
+$table_name = $wpdb->prefix . 'pto_product_tags';
+
+$tags = $wpdb->get_var( $wpdb->prepare( "SELECT tags FROM $table_name WHERE product_id = %d", $product_id ) );
+
+
+
+// Decode JSON string into array
+
+$tags = json_decode( $tags );
+
+
+
+// If no tags are found, return the original product object
+
+if ( empty( $tags ) ) {
+
+    return $product;
+
+}
+
+
+
+// Remove existing tags from product object
+
+$product_tags = $product->get_tag_ids();
+
+foreach ( $product_tags as $tag_id ) {
+
+    $product->remove_tag_id( $tag_id );
+
+}
+
+
+
+// Add new tags to product object
+
+foreach ( $tags as $tag ) {
+
+    $term = get_term_by( 'name', $tag, 'product_tag' );
+
+    if ( $term ) {
+
+        $product->add_tag( $term->term_id );
+
+    }
+
+}
+
+
+
+return $product;
+
+}
+
+
+
+
+
+
+
+
+
+ 
+
+ 
+
+
+
+// Add filter for modifying product tags in product queries
+
+add_filter( 'woocommerce_product_query_tax_query', 'pto_modify_product_query_tags' );
+
+function pto_modify_product_query_tags( $tax_query ) {
+
+// Check if current query is for product tags
+
+if ( isset( $_GET['product_tag'] ) ) {
+
+// Retrieve tag slug from URL parameter
+
+$tag_slug = sanitize_title( $_GET['product_tag'] );
+
+
+
+ 
+
+    // Retrieve tag ID from custom database table
+
+    global $wpdb;
+
+    $table_name = $wpdb->prefix . 'pto_product_tags';
+
+    $tag_id = $wpdb->get_var( $wpdb->prepare( "SELECT tag_id FROM $table_name WHERE tag_slug = %s", $tag_slug ) );
+
+
+
+    // Add custom taxonomy query for product tags
+
+    if ( $tag_id ) {
+
+        $tax_query[] = array(
+
+            'taxonomy' => 'product_tag',
+
+            'field'    => 'term_id',
+
+            'terms'    => array( $tag_id ),
+
+        );
+
+    }
+
+}
+
+
+
+return $tax_query;
+
+}
+
+
+
+// Add filter for modifying product tags in product search queries
+
+add_filter( 'woocommerce_product_search_query', 'pto_modify_product_search_query_tags' );
+
+function pto_modify_product_search_query_tags( $search_terms ) {
+
+// Retrieve product tags from custom database table
+
+global $wpdb;
+
+$table_name = $wpdb->prefix . 'pto_product_tags';
+
+$tags = $wpdb->get_col( "SELECT tags FROM $table_name" );
+
+
+
+ 
+
+// Decode JSON strings into arrays
+
+$tags = array_map( 'json_decode', $tags );
+
+
+
+// Flatten array of arrays into single array of tags
+
+$tags = call_user_func_array( 'array_merge', $tags );
+
+
+
+// Remove duplicates and empty values from tag array
+
+$tags = array_unique( array_filter( $tags ) );
+
+
+
+// Add tags to search terms
+
+foreach ( $tags as $tag ) {
+
+    $search_terms .= ' ' . $tag;
+
+}
+
+
+
+return $search_terms;
+
+}
+
+
+
+
+
+
+
+
+
+ 
+
+ 
+
+
+
+// Add filter for modifying product tags in product archive pages
+
+add_filter( 'woocommerce_product_tag_cloud_widget_args', 'pto_modify_product_tag_cloud_args' );
+
+function pto_modify_product_tag_cloud_args( $args ) {
+
+// Retrieve product tags from custom database table
+
+global $wpdb;
+
+$table_name = $wpdb->prefix . 'pto_product_tags';
+
+$tags = $wpdb->get_results( "SELECT tag_name, tag_slug FROM $table_name" );
+
+
+
+ 
+
+// Map tag objects to array of names and slugs
+
+$tags = array_map( function( $tag ) {
+
+    return array(
+
+        'name' => $tag->tag_name,
+
+        'slug' => $tag->tag_slug,
+
+    );
+
+}, $tags );
+
+
+
+// Modify tag cloud arguments to use custom tags and exclude empty tags
+
+$args['taxonomy'] = 'product_tag';
+
+$args['tags'] = $tags;
+
+$args['exclude'] = array( 0 );
+
+
+
+return $args;
+
+}
+
+
+
+// Add action for updating custom product tags table when product tags are updated
+
+add_action( 'edited_product_tag', 'pto_update_product_tag', 10, 2 );
+
+add_action( 'created_product_tag', 'pto_update_product_tag', 10, 2 );
+
+function pto_update_product_tag( $term_id, $tt_id ) {
+
+// Retrieve product tag data
+
+$tag = get_term( $term_id, 'product_tag' );
+
+
+
+ 
+
+// Update or insert product tag into custom database table
+
+global $wpdb;
+
+$table_name = $wpdb->prefix . 'pto_product_tags';
+
+$data = array(
+
+    'tag_id'    => $term_id,
+
+    'tag_name'  => $tag->name,
+
+    'tag_slug'  => $tag->slug,
+
+    'tags'      => json_encode( array_map( 'trim', explode( ',', $tag->description ) ) ),
+
+);
+
+$wpdb->replace( $table_name, $data );
+
+}
+
+
+
+// Add action for deleting custom product tags when product tags are deleted
+
+add_action( 'delete_product_tag', 'pto_delete_product_tag', 10, 1 );
+
+function pto_delete_product_tag( $term_id ) {
+
+// Delete product tag from custom database table
+
+global $wpdb;
+
+$table_name = $wpdb->prefix . 'pto_product_tags';
+
+$wpdb->delete( $table_name, array( 'tag_id' => $term_id ) );
+
+}
+
+
+
+
+
+
+
+
+
+ 
+
+ 
+
+
+
+// Add shortcode for displaying custom product tag list
+
+add_shortcode( 'pto_product_tags', 'pto_product_tags_shortcode' );
+
+function pto_product_tags_shortcode( $atts ) {
+
+// Set default shortcode attributes
+
+$atts = shortcode_atts( array(
+
+'limit' => 10,
+
+), $atts, 'pto_product_tags' );
+
+
+
+ 
+
+// Retrieve product tags from custom database table
+
+global $wpdb;
+
+$table_name = $wpdb->prefix . 'pto_product_tags';
+
+$tags = $wpdb->get_results( "SELECT tag_name, tag_slug FROM $table_name ORDER BY tag_count DESC LIMIT " . absint( $atts['limit'] ) );
+
+
+
+// Generate HTML for product tag list
+
+ob_start();
+
+?>
+
+<ul class="pto-product-tag-list">
+
+    <?php foreach ( $tags as $tag ) : ?>
+
+        <li><a href="<?php echo esc_url( get_term_link( $tag->tag_slug, 'product_tag' ) ); ?>"><?php echo esc_html( $tag->tag_name ); ?></a></li>
+
+    <?php endforeach; ?>
+
+</ul>
+
+<?php
+
+return ob_get_clean();
+
+}
+
+
+
+// Add action for creating custom database table on plugin activation
+
+register_activation_hook( FILE, 'pto_create_database_table' );
+
+function pto_create_database_table() {
+
+// Include WordPress database upgrade functions
+
+require_once( ABSPATH . 'wp-admin/includes/upgrade.php' );
+
+
+
+scss
+
+Copy code
+
+// Retrieve WordPress database prefix
+
+global $wpdb;
+
+
+
+// Define custom product tags table name
+
+$table_name = $wpdb->prefix . 'pto_product_tags';
+
+
+
+// Define custom product tags table schema
+
+$sql = "CREATE TABLE $table_name (
+
+            tag_id BIGINT(20) UNSIGNED NOT NULL,
+
+            tag_name VARCHAR(255) NOT NULL,
+
+            tag_slug VARCHAR(200) NOT NULL,
+
+            tags LONGTEXT NOT NULL,
+
+            tag_count BIGINT(20) NOT NULL DEFAULT 0,
+
+            PRIMARY KEY (tag_id),
+
+            KEY tag_name (tag_name),
+
+            KEY tag_slug (tag_slug)
+
+        ) $wpdb->charset COLLATE $wpdb->collate;";
+
+
+
+// Create custom product tags table
+
+dbDelta( $sql );
+
+}
+
+
+
+
+
+
+
+
+
+ 
+
+ 
+
+
+
+// Add action for updating custom product tag count on product save
+
+add_action( 'save_post_product', 'pto_update_product_tag_count', 10, 3 );
+
+function pto_update_product_tag_count( $post_id, $post, $update ) {
+
+// Check if product is published
+
+if ( $post->post_status !== 'publish' ) {
+
+return;
+
+}
+
+
+
+ 
+
+// Retrieve product tags from custom database table
+
+global $wpdb;
+
+$table_name = $wpdb->prefix . 'pto_product_tags';
+
+$product_tags = wp_get_post_terms( $post_id, 'product_tag', array( 'fields' => 'slugs' ) );
+
+$tags = $wpdb->get_results( "SELECT tag_id, tag_count FROM $table_name WHERE tag_slug IN ('" . implode( "','", $product_tags ) . "')" );
+
+
+
+// Update tag counts in custom database table
+
+foreach ( $tags as $tag ) {
+
+    $wpdb->update(
+
+        $table_name,
+
+        array( 'tag_count' => $tag->tag_count + 1 ),
+
+        array( 'tag_id' => $tag->tag_id ),
+
+        array( '%d' ),
+
+        array( '%d' )
+
+    );
+
+}
+
+}
+
+
+
+// Add action for updating custom product tag count on product delete
+
+add_action( 'before_delete_post', 'pto_update_product_tag_count_on_delete' );
+
+function pto_update_product_tag_count_on_delete( $post_id ) {
+
+// Retrieve product tags from custom database table
+
+global $wpdb;
+
+$table_name = $wpdb->prefix . 'pto_product_tags';
+
+$product_tags = wp_get_post_terms( $post_id, 'product_tag', array( 'fields' => 'slugs' ) );
+
+$tags = $wpdb->get_results( "SELECT tag_id, tag_count FROM $table_name WHERE tag_slug IN ('" . implode( "','", $product_tags ) . "')" );
+
+
+
+ 
+
+// Update tag counts in custom database table
+
+foreach ( $tags as $tag ) {
+
+    $wpdb->update(
+
+        $table_name,
+
+        array( 'tag_count' => $tag->tag_count - 1 ),
+
+        array( 'tag_id' => $tag->tag_id ),
+
+        array( '%d' ),
+
+        array( '%d' )
+
+    );
+
+}
+
+}
+
+
+
+// Add filter for removing product tags from product edit screen
+
+add_filter( 'get_terms_args', 'pto_remove_product_tags_from_edit_screen', 10, 2 );
+
+function pto_remove_product_tags_from_edit_screen( $args, $taxonomies ) {
+
+// Check if taxonomies being retrieved are for the product post type
+
+if ( in_array( 'product', $args['object_ids'] ) && in_array( 'product_tag', $taxonomies ) ) {
+
+$args['exclude'] = array();
+
+}
+
+return $args;
+
+}
+
+
+
+
+
+
+
+
+
+ 
+
+ 
+
+
+
+// Add shortcode for displaying custom product tags
+
+add_shortcode( 'pto_product_tags', 'pto_display_product_tags' );
+
+function pto_display_product_tags( $atts ) {
+
+// Set shortcode attributes
+
+$atts = shortcode_atts( array(
+
+'limit' => -1,
+
+'orderby' => 'tag_count',
+
+'order' => 'desc',
+
+'format' => 'list',
+
+'separator' => ', ',
+
+), $atts );
+
+
+
+ 
+
+// Retrieve custom product tags from database
+
+global $wpdb;
+
+$table_name = $wpdb->prefix . 'pto_product_tags';
+
+$tags = $wpdb->get_results( "SELECT * FROM $table_name ORDER BY {$atts['orderby']} {$atts['order']}" );
+
+
+
+// Limit number of tags displayed
+
+if ( $atts['limit'] != -1 ) {
+
+    $tags = array_slice( $tags, 0, $atts['limit'] );
+
+}
+
+
+
+// Format tags based on specified format
+
+$output = '';
+
+if ( $atts['format'] == 'list' ) {
+
+    $output .= '<ul class="pto-product-tags">';
+
+    foreach ( $tags as $tag ) {
+
+        $output .= '<li><a href="' . get_term_link( $tag->tag_slug, 'product_tag' ) . '">' . $tag->tag_name . '</a></li>';
+
+    }
+
+    $output .= '</ul>';
+
+} elseif ( $atts['format'] == 'inline' ) {
+
+    foreach ( $tags as $tag ) {
+
+        $output .= '<a href="' . get_term_link( $tag->tag_slug, 'product_tag' ) . '">' . $tag->tag_name . '</a>' . $atts['separator'];
+
+    }
+
+    $output = rtrim( $output, $atts['separator'] );
+
+}
+
+
+
+return $output;
+
+}
+
+
+
+
+
+
+
+
+
+ 
+
+ 
+
+
+
+// Register custom product tags taxonomy
+
+function pto_register_product_tags_taxonomy() {
+
+$labels = array(
+
+'name' => _x( 'Product Tags', 'taxonomy general name', 'pto-domain' ),
+
+'singular_name' => _x( 'Product Tag', 'taxonomy singular name', 'pto-domain' ),
+
+'search_items' => __( 'Search Product Tags', 'pto-domain' ),
+
+'popular_items' => __( 'Popular Product Tags', 'pto-domain' ),
+
+'all_items' => __( 'All Product Tags', 'pto-domain' ),
+
+'parent_item' => __( 'Parent Product Tag', 'pto-domain' ),
+
+'parent_item_colon' => __( 'Parent Product Tag:', 'pto-domain' ),
+
+'edit_item' => __( 'Edit Product Tag', 'pto-domain' ),
+
+'update_item' => __( 'Update Product Tag', 'pto-domain' ),
+
+'add_new_item' => __( 'Add New Product Tag', 'pto-domain' ),
+
+'new_item_name' => __( 'New Product Tag Name', 'pto-domain' ),
+
+'separate_items_with_commas' => __( 'Separate product tags with commas', 'pto-domain' ),
+
+'add_or_remove_items' => __( 'Add or remove product tags', 'pto-domain' ),
+
+'choose_from_most_used' => __( 'Choose from the most used product tags', 'pto-domain' ),
+
+'menu_name' => __( 'Product Tags', 'pto-domain' ),
+
+);
+
+
+
+ 
+
+$args = array(
+
+    'labels'                     => $labels,
+
+    'public'                     => true,
+
+    'hierarchical'              => false,
+
+    'show_ui'                    => true,
+
+    'show_admin_column'          => true,
+
+    'show_in_nav_menus'          => true,
+
+    'show_tagcloud'              => true,
+
+    'rewrite'                    => array(
+
+        'slug'                       => 'product-tag',
+
+        'with_front'                 => true,
+
+        'hierarchical'              => false,
+
+    ),
+
+);
+
+
+
+register_taxonomy( 'product_tag', 'product', $args );
+
+}
+
+add_action( 'init', 'pto_register_product_tags_taxonomy' );
+
+
+
+
+
+
+
+
+
+ 
+
+ 
+
+
+
+// Add custom fields for product tags
+
+function pto_add_custom_fields_for_product_tags() {
+
+// Add text field for product tag description
+
+woocommerce_wp_textarea_input(
+
+array(
+
+'id' => '_product_tag_description',
+
+'label' => __( 'Product Tag Description', 'pto-domain' ),
+
+'description' => __( 'Enter a description for this product tag', 'pto-domain' ),
+
+'desc_tip' => true,
+
+'wrapper_class' => 'form-field-wide',
+
+)
+
+);
+
+
+
+less
+
+Copy code
+
+// Add image field for product tag image
+
+woocommerce_wp_media_input(
+
+    array(
+
+        'id'          => '_product_tag_image',
+
+        'label'       => __( 'Product Tag Image', 'pto-domain' ),
+
+        'description' => __( 'Upload an image for this product tag', 'pto-domain' ),
+
+        'desc_tip'    => true,
+
+        'wrapper_class' => 'form-field-wide',
+
+        'mime_type'   => 'image',
+
+    )
+
+);
+
+}
+
+add_action( 'product_tag_add_form_fields', 'pto_add_custom_fields_for_product_tags' );
+
+add_action( 'product_tag_edit_form_fields', 'pto_add_custom_fields_for_product_tags' );
+
+
+
+// Save custom fields for product tags
+
+function pto_save_custom_fields_for_product_tags( $term_id ) {
+
+// Save product tag description
+
+if ( isset( $_POST['_product_tag_description'] ) ) {
+
+$product_tag_description = $_POST['_product_tag_description'];
+
+update_term_meta( $term_id, '_product_tag_description', $product_tag_description );
+
+}
+
+
+
+ 
+
+// Save product tag image
+
+if ( isset( $_POST['_product_tag_image'] ) ) {
+
+    $product_tag_image = $_POST['_product_tag_image'];
+
+    update_term_meta( $term_id, '_product_tag_image', $product_tag_image );
+
+}
+
+}
+
+add_action( 'edited_product_tag', 'pto_save_custom_fields_for_product_tags' );
+
+add_action( 'create_product_tag', 'pto_save_custom_fields_for_product_tags' );
+
+
+
+
+
+
+
+
+
+ 
+
+ 
+
+
+
+// Display custom fields on product tag archive pages
+
+function pto_display_custom_fields_on_product_tag_archive( $term ) {
+
+$product_tag_description = get_term_meta( $term->term_id, '_product_tag_description', true );
+
+$product_tag_image = get_term_meta( $term->term_id, '_product_tag_image', true );
+
+
+
+ 
+
+// Display product tag description
+
+if ( ! empty( $product_tag_description ) ) {
+
+    echo '<div class="product-tag-description">' . $product_tag_description . '</div>';
+
+}
+
+
+
+// Display product tag image
+
+if ( ! empty( $product_tag_image ) ) {
+
+    $image = wp_get_attachment_image( $product_tag_image, 'thumbnail' );
+
+    echo '<div class="product-tag-image">' . $image . '</div>';
+
+}
+
+}
+
+add_action( 'woocommerce_archive_description', 'pto_display_custom_fields_on_product_tag_archive' );
+
+
+
+// Add custom fields to product tag REST API response
+
+function pto_add_custom_fields_to_product_tag_api_response( $response, $term, $request ) {
+
+$product_tag_description = get_term_meta( $term->term_id, '_product_tag_description', true );
+
+$product_tag_image = get_term_meta( $term->term_id, '_product_tag_image', true );
+
+
+
+ 
+
+if ( ! empty( $product_tag_description ) ) {
+
+    $response->data['product_tag_description'] = $product_tag_description;
+
+}
+
+
+
+if ( ! empty( $product_tag_image ) ) {
+
+    $image = wp_get_attachment_image_src( $product_tag_image, 'thumbnail' );
+
+    $response->data['product_tag_image'] = $image[0];
+
+}
+
+
+
+return $response;
+
+}
+
+add_filter( 'woocommerce_rest_prepare_product_tag', 'pto_add_custom_fields_to_product_tag_api_response', 10, 3 );
+
+
+
+
+
+
+
+
+
+ 
+
+ 
+
+
+
+// Save custom fields on product tag edit page
+
+function pto_save_custom_fields_on_product_tag_edit( $term_id ) {
+
+$product_tag_description = $_POST['_product_tag_description'];
+
+$product_tag_image = $_POST['_product_tag_image'];
+
+
+
+ 
+
+if ( ! empty( $product_tag_description ) ) {
+
+    update_term_meta( $term_id, '_product_tag_description', $product_tag_description );
+
+} else {
+
+    delete_term_meta( $term_id, '_product_tag_description' );
+
+}
+
+
+
+if ( ! empty( $product_tag_image ) ) {
+
+    update_term_meta( $term_id, '_product_tag_image', $product_tag_image );
+
+} else {
+
+    delete_term_meta( $term_id, '_product_tag_image' );
+
+}
+
+}
+
+add_action( 'edited_product_tag', 'pto_save_custom_fields_on_product_tag_edit' );
+
+
+
+// Display custom fields on product tag edit page
+
+function pto_display_custom_fields_on_product_tag_edit( $term ) {
+
+$product_tag_description = get_term_meta( $term->term_id, '_product_tag_description', true );
+
+$product_tag_image = get_term_meta( $term->term_id, '_product_tag_image', true );
+
+?>
+
+<tr class="form-field">
+
+<th scope="row"><label for="_product_tag_description"><?php esc_html_e( 'Product Tag Description', 'pto' ); ?></label></th>
+
+<td><textarea name="_product_tag_description" id="_product_tag_description"><?php echo esc_html( $product_tag_description ); ?></textarea></td>
+
+</tr>
+
+<tr class="form-field">
+
+<th scope="row"><label for="_product_tag_image"><?php esc_html_e( 'Product Tag Image', 'pto' ); ?></label></th>
+
+<td>
+
+<div class="product-tag-image-preview"><?php echo wp_get_attachment_image( $product_tag_image, 'thumbnail' ); ?></div>
+
+<input type="hidden" name="_product_tag_image" id="_product_tag_image" value="<?php echo esc_attr( $product_tag_image ); ?>">
+
+<button class="product-tag-image-upload button"><?php esc_html_e( 'Upload / Choose Image', 'pto' ); ?></button>
+
+<button class="product-tag-image-remove button"><?php esc_html_e( 'Remove Image', 'pto' ); ?></button>
+
+</td>
+
+</tr>
+
+<?php
+
+}
+
+add_action( 'product_tag_edit_form_fields', 'pto_display_custom_fields_on_product_tag_edit', 10, 2 );
+
+
+
+// Enqueue scripts and styles for product tag edit page
+
+function pto_enqueue_scripts_and_styles_for_product_tag_edit() {
+
+wp_enqueue_media();
+
+wp_enqueue_script( 'pto-product-tag-image-upload', plugin_dir_url( FILE ) . 'js/product-tag-image-upload.js', array( 'jquery' ), '1.0', true );
+
+wp_enqueue_style( 'pto-product-tag-edit', plugin_dir_url( FILE ) . 'css/product-tag-edit.css', array(), '1.0' );
+
+}
+
+add_action( 'admin_enqueue_scripts', 'pto_enqueue_scripts_and_styles_for_product_tag_edit' );
+
+
+
+
+
+
+
+
+
